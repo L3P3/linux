@@ -3115,6 +3115,73 @@ static void quirk_hotplug_bridge(struct pci_dev *dev)
 DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_HINT, 0x0020, quirk_hotplug_bridge);
 
 /*
+ * Force ICH7/8/9 into AHCI mode.  This is needed because some
+ * BIOSes do not make AHCI-mode operation available to the user.
+ * As the Intel documentation states that the OS should not carry
+ * out the operation - the user must force this on the kernel
+ * commandline using quirk_ich_force_ahci
+ *
+ * As this quirk gets called whilst the PCI subsystem is
+ * walking the PCI bus, we declare this quirk against the LPC
+ * (device 00:1f.0), so that we can frob 00:1f.2 before the PCI
+ * code has scanned it.
+ * Note: the pci id might change due to this (e.g. from 27c4 to 27c5)
+ */
+
+static bool ich_force_ahci_mode; /* defaults to false */
+
+static int __init ich789_force_ahci_mode_setup(char *str)
+{
+	ich_force_ahci_mode = true;
+	return 0;
+}
+early_param("quirk_ich_force_ahci", ich789_force_ahci_mode_setup);
+
+static void ich789_force_ahci_mode(struct pci_dev *pdev)
+{
+	u8 amrval;
+	u8 sclkgc;
+	const int ich89_address_map_reg = 0x90;
+	const int ich89_sata_clock_gen_config_reg = 0x9c;
+
+	if (!ich_force_ahci_mode)
+		return;
+
+	/* ICH8 datasheet section 12.1.33 */
+	if (!pci_bus_read_config_byte(pdev->bus, PCI_DEVFN(PCI_SLOT(pdev->devfn), 2),
+		ich89_address_map_reg, &amrval)) {
+
+		if (amrval & (BIT(6) | BIT(7))) {
+			dev_printk(KERN_DEBUG, &pdev->dev,
+				"ICH7/8/9 SATA controller not in IDE mode.  Not modifying.\n");
+			return;
+		}
+		if (amrval & (BIT(0) | BIT(1)))
+			dev_printk(KERN_DEBUG, &pdev->dev,
+				"ICH7/8/9 in SATA/PATA combined mode.  Untested.\n");
+		/* AHCI mode */
+		amrval |= BIT(6);
+		amrval &= ~BIT(7);
+		pci_bus_read_config_byte(pdev->bus, PCI_DEVFN(PCI_SLOT(pdev->devfn), 2),
+			ich89_sata_clock_gen_config_reg, &sclkgc);
+		dev_printk(KERN_DEBUG, &pdev->dev, "sclkgc is %#0x\n", sclkgc);
+		pci_bus_write_config_byte(pdev->bus, PCI_DEVFN(PCI_SLOT(pdev->devfn), 2),
+			ich89_address_map_reg, amrval);
+		dev_printk(KERN_DEBUG, &pdev->dev, "Forced ICH7/8/9 mode PIIX->AHCI\n");
+	}
+}
+/* ICH7 */
+DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, 0x27b9, ich789_force_ahci_mode);
+/* ICH8 */
+DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_ICH8_0, ich789_force_ahci_mode);
+/* ICH9R LPC */
+DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, 0x2916, ich789_force_ahci_mode);
+/* ICH9M LPC */
+DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, 0x2917, ich789_force_ahci_mode);
+/* ICH9M-E LPC */
+DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, 0x2919, ich789_force_ahci_mode);
+
+/*
  * This is a quirk for the Ricoh MMC controller found as a part of some
  * multifunction chips.
  *
